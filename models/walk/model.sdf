@@ -1,0 +1,33 @@
+<?xml version="1.0" ?>
+<sdf version="1.5">
+
+  <model name="walk">
+    <static>true</static>
+
+    <link name="walk">
+
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://walk/meshes/walk.dae</uri>
+          </mesh>
+        </geometry>
+      </visual>
+
+      <collision name="collision">
+        <geometry>
+          <mesh>
+            <uri>model://walk/meshes/walk.dae</uri>
+          </mesh>
+        </geometry>
+      </collision>
+
+    </link>
+
+
+   
+    <static>1</static>
+    <allow_auto_disable>1</allow_auto_disable>
+  </model>
+
+</sdf>
