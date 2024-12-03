@@ -57,23 +57,23 @@ class Video_feed_in(Node):
                 print("stopline detected!!")
                 self.velocity.angular.z = 0.0
                 self.velocity.linear.x = 0.0
-            elif self.stopline_iteration < 550:
+            elif self.stopline_iteration < 550: # 550 iter 까지 직신
                 print("cross stopline!!")
                 self.velocity.angular.z = 0.0
                 self.velocity.linear.x = 1.5
             else:
-                print("stop finished!!")
+                print("stop finished!!") # 정지선 종료
                 self.stopline_activated = True
                 self.stopline_iteration = 0
             self.stopline_iteration += 1
-        else:
+        else: # 정지선이 인식되지 않은 경우에는 차선 인식 주행
             self.velocity.angular.z = Angle
             self.velocity.linear.x = Speed
-        if self.human_trigger:
+        if self.human_trigger: # 사람이 근접하면 정지
             self.human_stop_activated = True
             self.human_cnt = 0
             
-        if self.human_stop_activated:    
+        if self.human_stop_activated: # 사람이 멀어지고 일정시간 이후에 다시 출발
             print("human approch!!  count :", self.human_cnt)
             self.velocity.angular.z = 0.0
             self.velocity.linear.x = 0.0

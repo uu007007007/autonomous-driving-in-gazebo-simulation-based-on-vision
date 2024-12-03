@@ -61,7 +61,8 @@ setup(
         'control_node = self_driving_car_pkg.control_node:main',
         'yolo_test_node = self_driving_car_pkg.yolo_test_node:main',
         'stopline_node = self_driving_car_pkg.stopline_node:main',
-        'lidar_node = self_driving_car_pkg.lidar_node:main'
+        'lidar_node = self_driving_car_pkg.lidar_node:main',
+        'object_avoid = self_driving_car_pkg.object_avoid:main'
         ],
     },
 )
