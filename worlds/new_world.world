@@ -1080,7 +1080,7 @@
         <child>camera_frame</child>
       </joint>
       <link name='lidar_link'>
-        <pose>0.076 -2.2 0.75 0 0 -1.55</pose>
+        <pose>0.0 -2.5 0.75 0 0 -1.5708</pose>
         <inertial>
           <inertia>
             <ixx>0.001</ixx>
