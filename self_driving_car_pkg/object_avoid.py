@@ -1,12 +1,15 @@
 import random
 import math
+from time import time
 
 import numpy as np
 import cv2
+from cv_bridge import CvBridge
 import rclpy
 from rclpy.node import Node
 
-from my_msgs.msg import Objects, Tracker
+from sensor_msgs.msg import Image
+from my_msgs.msg import Objects, AvoidMsg
 
 
 """
@@ -14,11 +17,14 @@ from my_msgs.msg import Objects, Tracker
 """
 CAR_WIDTH = 2.5 # 차축 길이 m
 CAR_LENGTH = 3.2 # 라이다와 뒷 차축까지의 거리 m
-LFD = 5.2 # 전방 주시 거리
-MAX_ANGLE = 60 # 최대 조향각
-AVOID_RADIUS = 2 # 회피 경로 생성 반경
-DANGER_WIDTH = 2.7
-DANGER_HEIGHT = 4
+LFD = 4.5 # 전방 주시 거리
+MAX_ANGLE = 40 # 최대 조향각
+AVOID_RADIUS = 3 # 회피 경로 생성 반경
+DANGER_WIDTH = 3 # 위험 구역 너비
+DANGER_HEIGHT = 4 # 위험 구역 길이
+ANGLE_RATIO = 2 # 조향각 계수(민감도)
+RAD_RATIO = AVOID_RADIUS / DANGER_HEIGHT # 거리 비율 -> 회피 경로 생성할 때 사용
+MIN_RADIUS = 2.5
 
 
 class ObjectAvoid(Node):
@@ -30,7 +36,12 @@ class ObjectAvoid(Node):
             self.tracker_callback,
             10
         )
-        # self.publisher = self.create_publisher(Objects, '/tracked_objects', 10)
+        self.img_subscription = self.create_subscription(
+            Image,
+            '/camera/image_raw',
+            self.image_callback,
+            10)
+        self.publisher = self.create_publisher(AvoidMsg, '/avoid_control', 10)
         timer_period = 0.03;self.timer = self.create_timer(timer_period, self.process_func)
 
         # 인스턴스 변수
@@ -38,6 +49,13 @@ class ObjectAvoid(Node):
         self.tracking_class = None
         self.tracking_id = None
         self.lfd_point = None
+        self.lfd = LFD
+        self.avoid_activate = False
+        self.dead_reckoning = False
+        self.roi_img = None
+        self.bridge = CvBridge()
+        self.detected_distance = None
+        self.avoid_angle = 0
 
 
     def tracker_callback(self, msg):
@@ -52,35 +70,76 @@ class ObjectAvoid(Node):
             point_x = obj.x
             point_y = obj.y
             id = obj.id
-            self.tracked_objects.append((point_x, point_y, id))
+            self.tracked_objects.append([point_x, point_y, id])
+
+    
+    def image_callback(self, msg):
+        """
+        이미지 콜백함수 - 이미지 전처리 후 roi 이미지 저장
+        """
+        # ROS Image 메시지를 OpenCV 형식으로 변환
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        self.image_preprocess(frame)
+
+    
+    def image_preprocess(self, frame, top_left = (490, 400), bottom_left = (360,525)):
+        """
+        이미지 메세지를 입력 받아 전처리
+
+        Args:
+            frame (img): 원본 이미지
+            top_left (tuple): 탑뷰 전환에 사용될 이미지 좌상단 좌표 
+            bottom_left (tuple): 탑뷰 전환에 사용될 이미지 좌하단 좌표
+        """
+        height, width, _ = frame.shape
+        
+        top_right = (width - top_left[0], top_left[1])
+        bottom_right = (width - bottom_left[0], bottom_left[1])
+        src = np.float32([top_left, top_right, bottom_right, bottom_left])
+        dst = np.float32([(0, 0), (width, 0), (width, height), (0,height)])
+
+        mat = cv2.getPerspectiveTransform(src, dst)
+        trans_img = cv2.warpPerspective(frame, mat, (width, height))
+        trans_img = cv2.resize(trans_img, (640, 360))
+        roi_img = trans_img[trans_img.shape[0] // 2:, :]
+
+        # HSV로 색 추출
+        hsvLower = np.array([25, 51, 181])    # 추출할 색의 하한(HSV) (색상, 채도, 명도)
+        hsvUpper = np.array([46, 255, 255])    # 추출할 색의 상한(HSV)
+        hsv = cv2.cvtColor(roi_img, cv2.COLOR_BGR2HSV) # 이미지를 HSV으로 변환
+        hsv_mask = cv2.inRange(hsv, hsvLower, hsvUpper)    # HSV에서 마스크를 작성
+        self.roi_img = cv2.bitwise_and(roi_img, roi_img, mask=hsv_mask) # 원래 이미지와 마스크를 합성
+
+
 
     
     def process_func(self):
         """
         실시간으로 근접한 장애물 객체에 대해 회피 경로를 생성하고, 이를 추종하기 위한 각도를 publish
         """
+        start = time()
         # 경로 생성 및 추종
-        angle = self.path_planning()
-
+        self.path_planning()
+        
         # 각도 publish
-        self.control_pub(angle)
+        self.control_pub(self.avoid_angle)
 
         # 시각화
         self.visualization(self.tracked_objects)
-
+        end = time()
+        print(f'연산 시간: {end-start}s')
 
     def path_planning(self):
         """
         위험 구역에 객체가 인식되면 그 객체를 추적하고, 회피 경로를 생성
 
-        Returns:
-            angle (float): 회피주행을 위한 조향각
+        Results:
+            self.avoid_angle (float): 회피주행을 위한 조향각
 
         Notes:
             - self.tracking_id 값을 이용해 근접한 객체를 추적하고, 회피 주행
         """
         detected_id_lst = [] # 감지된 id 리스트
-        angle = 0
 
         # 위험 구역에 들어온 객체 id 트랙킹
         for obj in self.tracked_objects:
@@ -88,25 +147,51 @@ class ObjectAvoid(Node):
             detected_id_lst.append(id)
 
             if self.check_danger(x, y): # 객체가 위험 구역에 진입했는지 확인
-                self.tracking_id = id # 근접한 객체의 id 저장
-                self.tracking_class = obj # 근접한 객체 정보 저장
+                if self.tracking_id is None: # 새로운 객체가 인식된 경우
+                    # print(f'새로운 객체 진입!! 거리: {y}')
+                    self.detected_distance = y
+                    self.tracking_id = id # 근접한 객체의 id 저장
+                    self.tracking_class = obj # 근접한 객체 정보 저장
 
             if self.tracking_id is not None: # 객체 트랙킹
                 if id == self.tracking_id:
                     self.tracking_class = obj
 
-        # 트랙킹 된 경우
+        # 트래킹이 시작된 경우 회피 주행 활성화
         if self.tracking_id is not None:
+            self.avoid_activate = True
+
+        # 회피 주행이 활성화된 경우
+        if self.avoid_activate:
+
+            if self.dead_reckoning:
+                self.tracking_class[1] -= 0.01 # 데드 레커닝이 수행되는 동안 객체의 y축 위치를 0.1m씩 감소시킴
+
             tracking_x, tracking_y, _ = self.tracking_class
             x_points, y_points = self.create_path(tracking_x, tracking_y) # 회피 경로 생성
-            angle= self.purepursuit(x_points, y_points)
+            self.purepursuit(x_points, y_points) # 경로 추종 각도 할당
 
             # 트래킹 하던 객체가 사라지면 트래킹 종료
             if self.tracking_id not in detected_id_lst:
                 self.tracking_id = None
-                self.tracking_class = None
+                self.dead_reckoning = True # 데드 레커닝 시작
+                
 
-        return angle
+        if self.tracking_id is None and self.avoid_activate: # 트래킹 종료 후 나머지 회피 주행
+            # 회피 종료 탐지
+            if self.detect_finish():
+                self.lfd_point = None # 회피가 완료되면 초기화
+                self.avoid_activate = False # 차선 복귀가 완료되었다고 판단되면 회피 주행 비활성화
+                self.tracking_class = None # 객체 트랙킹 종료
+                self.dead_reckoning = False # 데드 레커닝 종료
+                self.detected_distance = None
+                self.avoid_angle = 0 # 회피 각도 초기화
+
+        # ROI 이미지 출력
+        if self.roi_img is not None:
+            cv2.imshow("avoid", self.roi_img)
+
+        # print(f'회피주행 활성화 여부: {self.avoid_activate}')
     
     
     def check_danger(self, x, y):
@@ -139,7 +224,8 @@ class ObjectAvoid(Node):
         # 중심 좌표와 반지름
         center_x = x
         center_y = y
-        radius = AVOID_RADIUS
+        radius = max(RAD_RATIO * self.detected_distance, MIN_RADIUS) # 객체 인식 거리에 계수를 곱하여 반경 설정
+
 
         # 각도 범위: 90도에서 270도까지 (단위: 라디안)
         theta_start = np.radians(270)   # 270도 -> 라디안
@@ -165,15 +251,14 @@ class ObjectAvoid(Node):
             x_points (list of float): x 좌표값들의 리스트
             y_points (list of float): y 좌표값들의 리스트
 
-        Returns:
-            angle (float): 계산된 조향각
+        Results:
+            self.avoid_angle (float): 계산된 조향각
 
         Notes:
             - look forward distance에 해당하는 포인트 좌표를 인스턴스 변수로 저장하여 visualization에 활용
         """
         is_look_forward_point = False
         self.lfd_point = None
-        angle = 0
 
         for x, y in zip(x_points, y_points): #path 포인트 순회
             dx = x
@@ -181,15 +266,16 @@ class ObjectAvoid(Node):
             dis = math.sqrt(pow(dx, 2)+pow(dy, 2)) # 차량의 후방에서부터 path 까지의 거리
             
             if dy > 0: #차량보다 앞에 있는 점들만 순회
-                if dis>= LFD : #dis 가 lfd 보다 큰 경우 break
+                if dis>= self.lfd : #dis 가 lfd 보다 큰 경우 break
                     is_look_forward_point=True #lfd 활성화
                     self.lfd_point = (x,y)
                     break
 
         if is_look_forward_point: #lfd 가 활성화 되었을때
             steering = math.atan((2 * CAR_LENGTH * (dx / dis)) / dis) # PurePursuit 알고리즘 계산
-            angle = (math.degrees(-steering)) #조향각을 angle로 할당(방향 반대)
-            print("real angle = ", angle)
+            angle = (math.degrees(steering)) #조향각 degree로 전환
+
+            angle = angle * ANGLE_RATIO
 
             # 각도 제한
             if angle >= MAX_ANGLE:
@@ -197,11 +283,66 @@ class ObjectAvoid(Node):
             elif angle <= -MAX_ANGLE:
                 angle = -MAX_ANGLE
 
-        return angle
+            self.avoid_angle = angle
 
 
-    def control_pub(self, angle, speed = 30):
-        pass
+    def detect_finish(self, width_threshold=0.8):
+        """
+        회피 주행 도중 회피 주행 종료시점은 인식하는 함수
+
+        - roi 이미지에서 외곽선을 검출해 조건에 부합하면 True를 반환
+
+        Returns:
+            True/False (bool): 종료 조건에 부합한지 여부
+        """
+        finish_flag = False
+        # 이미지를 그레이스케일로 변환
+        gray = cv2.cvtColor(self.roi_img, cv2.COLOR_BGR2GRAY)
+        # 블러 적용하여 노이즈 제거
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # 엣지 검출
+        edges = cv2.Canny(blurred, 50, 150)
+        #직선 검출
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, 10, None, 150, 50)
+        if lines is not None:
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                cv2.line(self.roi_img, (x1,y1), (x2, y2), (0,0,255), 2)
+               
+                # 직선의 기울기 계산
+                if (x2 - x1) == 0:
+                    continue # 0으로 나누는 경우 무시
+                else:
+                    gradient = (y2 - y1)/(x2 - x1)
+                
+                # 종료 조건 반환
+                finish_flag = (gradient > 0 and x1 < (self.roi_img.shape[1] * width_threshold) and
+                               x1 > (self.roi_img.shape[1] / 2))
+        
+        return finish_flag
+                    
+
+
+
+    def control_pub(self, angle, speed = 40):
+        """
+        회피 제어 값을 publish
+
+        Args:
+            angle (float): 차량의 조향각
+            speed (float): 차량의 속도(기본: 30)
+
+        Pub:
+            - self.avoid_activate (bool): 회피 활성화 여부
+            - speed (float32)
+            - angle (float32)
+        """
+        msg = AvoidMsg()
+        msg.activate = self.avoid_activate
+        msg.speed = float(speed)
+        msg.angle = float(angle)
+        self.publisher.publish(msg)
+
 
     def visualization(self, tracked_objects):
         """
@@ -257,29 +398,26 @@ class ObjectAvoid(Node):
 
         #lfd 반경 시각화
         cv2.circle(img, (lidar_position[0], int(lidar_position[1] + (CAR_LENGTH * meter_to_pixel))),
-                   int(LFD * meter_to_pixel), (200, 200, 255), 1)
+                   int(self.lfd * meter_to_pixel), (200, 200, 255), 1)
         
+        # 트래킹 된 객체에 대해 경로 표시
+        if self.avoid_activate:
+            x = int(lidar_position[0] + self.tracking_class[0] * meter_to_pixel)
+            y = int(lidar_position[1] - self.tracking_class[1] * meter_to_pixel)
+            x_points, y_points = self.create_path_visualization(x, y, meter_to_pixel) # 시각화를 위한 회피 경로 생성
+            # 각 점을 이미지에 표시
+            for x, y in zip(x_points, y_points):
+                # 점의 좌표를 정수로 변환
+                cv2.circle(img, (int(x), int(y)), 1, (255, 255, 0), -1)  # 하늘색 점
+
+        # lfd 포인트 시각화
+        if self.lfd_point is not None:
+            lfd_x = int(lidar_position[0] + self.lfd_point[0] * meter_to_pixel)
+            lfd_y = int(lidar_position[1] - self.lfd_point[1] * meter_to_pixel)
+            cv2.circle(img, (lfd_x, lfd_y), 3, (0, 0, 255), -1)  # 빨간색 점
 
         # 탐지된 객체 좌표 표시
         if len(tracked_objects) != 0:
-            
-            # 트래킹 된 객체에 대해 경로 표시
-            if self.tracking_id is not None:
-                x = int(lidar_position[0] + self.tracking_class[0] * meter_to_pixel)
-                y = int(lidar_position[1] - self.tracking_class[1] * meter_to_pixel)
-                x_points, y_points = self.create_path_visualization(x, y, meter_to_pixel) # 시각화를 위한 회피 경로 생성
-                # 각 점을 이미지에 표시
-                for x, y in zip(x_points, y_points):
-                    # 점의 좌표를 정수로 변환
-                    cv2.circle(img, (int(x), int(y)), 1, (255, 255, 0), -1)  # 하늘색 점
-
-            # lfd 포인트 시각화
-            if self.lfd_point is not None:
-                lfd_x = int(lidar_position[0] + self.lfd_point[0] * meter_to_pixel)
-                lfd_y = int(lidar_position[1] - self.lfd_point[1] * meter_to_pixel)
-                cv2.circle(img, (lfd_x, lfd_y), 3, (0, 0, 255), -1)  # 빨간색 점
-
-
             for obj in tracked_objects:
                 # 객체의 중심점 (obj[0], obj[1]은 미터 단위로 가정)
                 # 객체 위치를 픽셀로 변환
@@ -318,7 +456,7 @@ class ObjectAvoid(Node):
         # 중심 좌표와 반지름
         center_x = x
         center_y = y
-        radius = AVOID_RADIUS * meter_to_pixel
+        radius = max(RAD_RATIO * self.detected_distance, MIN_RADIUS) * meter_to_pixel
 
         # 각도 범위: 90도에서 270도까지 (단위: 라디안)
         theta_start = np.radians(90)  # 90도 -> 라디안
@@ -333,6 +471,8 @@ class ObjectAvoid(Node):
         y_points = center_y + radius * np.sin(theta_values)
 
         return x_points, y_points
+    
+
     
 
 

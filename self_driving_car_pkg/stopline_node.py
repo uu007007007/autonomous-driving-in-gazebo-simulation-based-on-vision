@@ -44,17 +44,11 @@ class StopLineDetectionNode(Node):
 
         
 
-    def detect_StopLine(self, roi_top_left=(100, 200), roi_bottom_right=(400, 400)):
+    def detect_StopLine(self, top_left = (490, 400), bottom_left = (360,525)):
         stop_detected = False
-        # 관심 영역 설정
-        x1, y1 = roi_top_left
-        x2, y2 = roi_bottom_right
-        cv2.imshow('1', self.frame)
+        # cv2.imshow('1', self.frame)
         height, width, _ = self.frame.shape
-        # frame = frame[y1:y2, x1:x2]
-        # print(height, width)
-        top_left = (490, 400)
-        bottom_left = (360,525)
+        
         top_right = (width - top_left[0], top_left[1])
         bottom_right = (width - bottom_left[0], bottom_left[1])
         # print([top_left, top_right, bottom_right, bottom_left])
@@ -125,8 +119,8 @@ class StopLineDetectionNode(Node):
                 
 
         
-        cv2.imshow("polygon", roi_img)
-        cv2.imshow("trans", trans_img)
+        cv2.imshow("stop line", roi_img)
+        # cv2.imshow("trans", trans_img)
         
 
         return stop_detected # True or False return

@@ -43,7 +43,7 @@ class Yolov8Node(Node):
             self.get_logger().warn("CUDA is not available. Switching to CPU.")
             device = "cpu"
 
-        self.declare_parameter("threshold", 0.7)
+        self.declare_parameter("threshold", 0.8)
         self.threshold = self.get_parameter("threshold").get_parameter_value().double_value
 
         self.declare_parameter("enable", True)

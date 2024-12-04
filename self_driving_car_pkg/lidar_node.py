@@ -1,4 +1,6 @@
 import numpy as np
+import os
+import sys
 import cv2
 from sklearn.cluster import DBSCAN
 import rclpy
@@ -7,6 +9,10 @@ from sensor_msgs.msg import LaserScan
 from my_msgs.msg import Objects, Tracker
 import time
 import random
+
+# print문 buffer 비활성화 -> print문 바로 출력
+os.environ['PYTHONUNBUFFERED'] = '1'
+sys.stdout.reconfigure(line_buffering=True)
 
 class LidarTracker(Node):
     def __init__(self):
@@ -21,8 +27,10 @@ class LidarTracker(Node):
         timer_period = 0.03;self.timer = self.create_timer(timer_period, self.process_func)
         self.previous_centroids = []  # 이전 프레임의 객체 중심 좌표
         self.epsilon = 0.3  # DBSCAN 클러스터링의 최대 거리 (m)
-        self.tracking_thres = 0.5
+        self.tracking_thres = 1.5
         self.points = None
+        self.last_id = 0
+
 
     def lidar_callback(self, msg):
         # 1. LiDAR 데이터 변환
@@ -100,11 +108,11 @@ class LidarTracker(Node):
             self.previous_centroids = []
             return []
         if len(self.previous_centroids) == 0: # 이전 객체가 없던 경우
-            for id, curr in enumerate(centroids):
-                curr_centroids.append((curr[0],curr[1], id+1)) # 현재 중심만 추가
+            for curr in centroids:
+                curr_centroids.append((curr[0],curr[1], self.last_id+1)) # 현재 중심만 추가
             return curr_centroids
         pair_lst = []
-        last_id = 0
+        
 
         # 이전 중심과 현재 중심 매칭
         for prev in (self.previous_centroids):
@@ -116,8 +124,8 @@ class LidarTracker(Node):
                 if distance <= self.tracking_thres: # 거리가 임계치보다 작은 경우 같은 객체로 인식
                     curr_centroids.append((curr_x,curr_y, prev_id)) # 이전 객체와 같은 id 부여
                     pair_lst.append(i) # 매칭된 현재 중심의 인덱스 저장
-                    if prev_id > last_id:
-                        last_id = prev_id # 부여된 id 중 가장 큰 값 저장
+                    if prev_id > self.last_id:
+                        self.last_id = prev_id # 부여된 id 중 가장 큰 값 저장
                     break
         cnt = 0
         pair_lst.sort() # 인덱스 정렬
@@ -136,7 +144,7 @@ class LidarTracker(Node):
             # 새로운 id 생성
             for new in centroids:
                 new_x, new_y = new
-                curr_centroids.append((new_x,new_y, last_id + add_id))
+                curr_centroids.append((new_x,new_y, self.last_id + add_id))
                 add_id += 1
         print(f'current result: {curr_centroids}')
 

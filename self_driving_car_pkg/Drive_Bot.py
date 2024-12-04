@@ -357,12 +357,12 @@ class Car:
         else:
             color_direction = (0, 0, 255)
 
-        cv2.putText(frame_disp, str(direction_string), (20, 40), cv2.FONT_HERSHEY_DUPLEX, 0.4, color_direction, 1)
+        cv2.putText(frame_disp, str(direction_string), (20, 20), cv2.FONT_HERSHEY_DUPLEX, 0.4, color_direction, 1)
 
-        angle_speed_str = "[ Angle ,Speed ] = [ " + str(int(angle_of_car)) + "deg ," + str(int(current_speed)) + "mph ]"
-        cv2.putText(frame_disp, str(angle_speed_str), (20, 20), cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 255), 1)
+        # angle_speed_str = "[ Angle ,Speed ] = [ " + str(int(angle_of_car)) + "deg ," + str(int(current_speed)) + "mph ]"
+        # cv2.putText(frame_disp, str(angle_speed_str), (20, 20), cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 0, 255), 1)
 
-        cv2.putText(frame_disp, "Traffic Light State = [ " + Traffic_State + " ] ", (20, 60), cv2.FONT_HERSHEY_COMPLEX, 0.35, 255)
+        cv2.putText(frame_disp, "Traffic Light State = [ " + Traffic_State + " ] ", (20, 40), cv2.FONT_HERSHEY_COMPLEX, 0.35, 255)
 
         if (Tracked_class == "left_turn" or Tracked_class == "right_turn"):
             font_Scale = 0.32
@@ -372,7 +372,7 @@ class Car:
                 Tracked_class = Tracked_class + " : Activated { " + str(Activat_LeftTurn or Activat_RightTurn) + " } "
         else:
             font_Scale = 0.37
-        cv2.putText(frame_disp, "Sign Detected ==> " + str(Tracked_class), (20, 80), cv2.FONT_HERSHEY_COMPLEX, font_Scale, (0, 255, 255), 1)
+        cv2.putText(frame_disp, "Sign Detected ==> " + str(Tracked_class), (20, 60), cv2.FONT_HERSHEY_COMPLEX, font_Scale, (0, 255, 255), 1)
 
     def driveCar(self, frame):
 
