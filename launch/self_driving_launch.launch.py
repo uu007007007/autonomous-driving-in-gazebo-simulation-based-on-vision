@@ -33,7 +33,7 @@ def generate_launch_description():
         Node(
           package='self_driving_car_pkg',
           executable='object_avoid',
-          name='object_avoid'
+          name='object_avoid',
         ),
 
         # 제어 노드
@@ -41,6 +41,5 @@ def generate_launch_description():
           package='self_driving_car_pkg',
           executable='computer_vision_node',
           name='computer_vision_node',
-          output='screen'
         ),
     ])

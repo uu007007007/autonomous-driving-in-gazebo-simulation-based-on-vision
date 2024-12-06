@@ -15,9 +15,11 @@ class StopLineDetectionNode(Node):
             self.image_callback,
             10)
         self.publisher_ = self.create_publisher(Bool, '/stop_line_detected', 10)
+        self.image_pub = self.create_publisher(Image, "stopline_image", 10)
         self.bridge = CvBridge()
         self.previous_detection = None
         self.get_logger().info('Stop Line Detection Node has been started.')
+        
 
     def image_callback(self, msg):
         # ROS Image 메시지를 OpenCV 형식으로 변환
@@ -46,12 +48,10 @@ class StopLineDetectionNode(Node):
 
     def detect_StopLine(self, top_left = (490, 400), bottom_left = (360,525)):
         stop_detected = False
-        # cv2.imshow('1', self.frame)
         height, width, _ = self.frame.shape
         
         top_right = (width - top_left[0], top_left[1])
         bottom_right = (width - bottom_left[0], bottom_left[1])
-        # print([top_left, top_right, bottom_right, bottom_left])
         src = np.float32([top_left, top_right, bottom_right, bottom_left])
         dst = np.float32([(0, 0), (width, 0), (width, height), (0,height)])
 
@@ -67,20 +67,16 @@ class StopLineDetectionNode(Node):
         hsv_mask = cv2.inRange(hsv, hsvLower, hsvUpper)    # HSV에서 마스크를 작성
         roi_img = cv2.bitwise_and(roi_img, roi_img, mask=hsv_mask) # 원래 이미지와 마스크를 합성
 
-        # cv2.imshow('trans_img', trans_img)
         # 이미지를 그레이스케일로 변환
         gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
         # 블러 적용하여 노이즈 제거
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         # 엣지 검출
         edges = cv2.Canny(blurred, 50, 150)
-        # 이미지의 하단 절반만 관심 영역으로 설정
-        # roi = edges[frame.shape[0] // 2:, :]
 
         lines = cv2.HoughLinesP(edges, 1, np.pi/180, 10, None, 400, 100)
         
         if lines is not None:
-            # print("검출된 직선 개수 : ", len(lines))
             for line in lines:
                 x1, y1, x2, y2 = line[0]
                 cv2.line(roi_img, (x1,y1), (x2, y2), (0,0,255), 2)
@@ -89,39 +85,12 @@ class StopLineDetectionNode(Node):
                 vector = np.array([x2-x1, y2-y1])
                 norm = np.linalg.norm(vector)
                 v_unit = vector/norm
-                # print("vector",vector)
-                # print("norm", norm)
-                # print("v_unit",v_unit)
                 x_unit = (1, 0)
                 theta = np.degrees(np.arccos(v_unit @ x_unit))
-                # print(v_unit @ x_unit)
-                # print(theta)
                 if theta < 2:
                     stop_detected = True
 
-                
-
-        # # 관심 영역에서 컨투어 찾기
-        # contours = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-2]
-
-        # for contour in contours:
-        #     # 컨투어를 다각형으로 근사화
-        #     approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
-        #     cv2.polylines(edges, [approx], True, (0, 255, 0), 2)
-        #     # 다각형이 4개의 변을 가지면 정지선일 가능성 있음
-        #     if len(approx) == 4:
-        #         # 컨투어의 경계 상자 계산
-        #         x, y, w, h = cv2.boundingRect(approx)
-        #         aspect_ratio = w / float(h)
-        #         # 가로 세로 비율이 정지선의 합리적인 범위 내에 있는지 확인
-        #         if 6 < aspect_ratio < 10:
-        #             return True
-                
-
-        
-        cv2.imshow("stop line", roi_img)
-        # cv2.imshow("trans", trans_img)
-        
+        self.image_pub.publish(self.bridge.cv2_to_imgmsg(roi_img, encoding="bgr8")) # 정지선 이미지 pub
 
         return stop_detected # True or False return
 

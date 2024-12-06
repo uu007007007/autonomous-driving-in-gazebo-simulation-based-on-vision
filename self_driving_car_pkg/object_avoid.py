@@ -1,16 +1,22 @@
 import random
 import math
 from time import time
+import os
+import sys
 
 import numpy as np
 import cv2
 from cv_bridge import CvBridge
 import rclpy
 from rclpy.node import Node
+from cv_bridge import CvBridge
 
 from sensor_msgs.msg import Image
 from my_msgs.msg import Objects, AvoidMsg
 
+# print문 buffer 비활성화 -> print문 바로 출력
+os.environ['PYTHONUNBUFFERED'] = '1'
+sys.stdout.reconfigure(line_buffering=True)
 
 """
 차량 파라미터
@@ -42,6 +48,8 @@ class ObjectAvoid(Node):
             self.image_callback,
             10)
         self.publisher = self.create_publisher(AvoidMsg, '/avoid_control', 10)
+        self.image_pub = self.create_publisher(Image, "lidar_image", 10)
+        self.lane_image_pub = self.create_publisher(Image, "lane_image", 10)
         timer_period = 0.03;self.timer = self.create_timer(timer_period, self.process_func)
 
         # 인스턴스 변수
@@ -52,10 +60,15 @@ class ObjectAvoid(Node):
         self.lfd = LFD
         self.avoid_activate = False
         self.dead_reckoning = False
-        self.roi_img = None
-        self.bridge = CvBridge()
         self.detected_distance = None
         self.avoid_angle = 0
+        self.lane_changed = False # 차선 변경 여부
+        self.prev_theta_start = None
+
+        self.roi_img = None
+        self.image = None
+        self.bridge = CvBridge()
+        
 
 
     def tracker_callback(self, msg):
@@ -152,6 +165,7 @@ class ObjectAvoid(Node):
                     self.detected_distance = y
                     self.tracking_id = id # 근접한 객체의 id 저장
                     self.tracking_class = obj # 근접한 객체 정보 저장
+                    self.dead_reckoning = False # 진행중이던 데드 레커닝 종료
 
             if self.tracking_id is not None: # 객체 트랙킹
                 if id == self.tracking_id:
@@ -160,6 +174,17 @@ class ObjectAvoid(Node):
         # 트래킹이 시작된 경우 회피 주행 활성화
         if self.tracking_id is not None:
             self.avoid_activate = True
+
+        if self.tracking_id is None and self.avoid_activate: # 트래킹 종료 후 나머지 회피 주행
+            # 회피 종료 탐지
+            if self.detect_finish():
+                self.lfd_point = None # 회피가 완료되면 초기화
+                self.avoid_activate = False # 차선 복귀가 완료되었다고 판단되면 회피 주행 비활성화
+                self.tracking_class = None # 객체 트랙킹 종료
+                self.dead_reckoning = False # 데드 레커닝 종료
+                self.detected_distance = None
+                self.lane_changed = False # 차선 변경 초기화
+                self.avoid_angle = 0 # 회피 각도 초기화
 
         # 회피 주행이 활성화된 경우
         if self.avoid_activate:
@@ -175,21 +200,14 @@ class ObjectAvoid(Node):
             if self.tracking_id not in detected_id_lst:
                 self.tracking_id = None
                 self.dead_reckoning = True # 데드 레커닝 시작
-                
 
-        if self.tracking_id is None and self.avoid_activate: # 트래킹 종료 후 나머지 회피 주행
-            # 회피 종료 탐지
-            if self.detect_finish():
-                self.lfd_point = None # 회피가 완료되면 초기화
-                self.avoid_activate = False # 차선 복귀가 완료되었다고 판단되면 회피 주행 비활성화
-                self.tracking_class = None # 객체 트랙킹 종료
-                self.dead_reckoning = False # 데드 레커닝 종료
-                self.detected_distance = None
-                self.avoid_angle = 0 # 회피 각도 초기화
+        print(f'차선 변경 여부: {self.lane_changed}')
 
-        # ROI 이미지 출력
-        if self.roi_img is not None:
-            cv2.imshow("avoid", self.roi_img)
+        # 이미지 Pub
+        if self.image is not None and self.roi_img is not None:
+            self.image_pub.publish(self.bridge.cv2_to_imgmsg(self.image, encoding="bgr8"))
+            self.lane_image_pub.publish(self.bridge.cv2_to_imgmsg(self.roi_img, encoding="bgr8"))
+            # cv2.imshow("avoid", lidar_img)
 
         # print(f'회피주행 활성화 여부: {self.avoid_activate}')
     
@@ -228,7 +246,14 @@ class ObjectAvoid(Node):
 
 
         # 각도 범위: 90도에서 270도까지 (단위: 라디안)
-        theta_start = np.radians(270)   # 270도 -> 라디안
+        if self.lane_changed and self.dead_reckoning == False: # 차선이 변경된 경우에는 경로를 반대 방향으로 생성
+            theta_start = np.radians(-90)
+        elif self.lane_changed == False and self.dead_reckoning == False:
+            theta_start = np.radians(270)   # 270도 -> 라디안
+        else:
+            theta_start = self.prev_theta_start # 데드 레커닝이 진행중일 때는 이전 방향 유지
+        
+        self.prev_theta_start = theta_start # 이전 방향 저장
         theta_end = np.radians(90)  # 90도 -> 라디안
         
 
@@ -303,7 +328,7 @@ class ObjectAvoid(Node):
         # 엣지 검출
         edges = cv2.Canny(blurred, 50, 150)
         #직선 검출
-        lines = cv2.HoughLinesP(edges, 1, np.pi/180, 10, None, 150, 50)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, 10, None, 100, 50)
         if lines is not None:
             for line in lines:
                 x1, y1, x2, y2 = line[0]
@@ -315,6 +340,10 @@ class ObjectAvoid(Node):
                 else:
                     gradient = (y2 - y1)/(x2 - x1)
                 
+                # 차선 변경 여부 할당
+                self.lane_changed = (gradient < 0 and x1 > (self.roi_img.shape[1] * (1-width_threshold)) and
+                               x1 < (self.roi_img.shape[1] / 2))
+
                 # 종료 조건 반환
                 finish_flag = (gradient > 0 and x1 < (self.roi_img.shape[1] * width_threshold) and
                                x1 > (self.roi_img.shape[1] / 2))
@@ -344,13 +373,17 @@ class ObjectAvoid(Node):
         self.publisher.publish(msg)
 
 
-    def visualization(self, tracked_objects):
+    def visualization(self, tracked_objects, car_size=100):
         """
         OpenCV를 이용해 객체의 상태와 경로 및 lfd 시각화
 
         Args:
             tracked_objects (list of tuple): 트랙킹되고 있는 객체들의 정보를 담은 리스트
         """
+        # 차량 이미지 불러오기
+        car_img = cv2.imread('/home/uu007007007/project_ws/src/self_driving_car_pkg/self_driving_car_pkg/data/car.png')
+        car_img = cv2.resize(car_img, (car_size, car_size)) # 이미지 리사이즈
+
         # 이미지 크기 (픽셀 단위) - 크기 줄이기
         img_width = 640  # 이미지 너비
         img_height = 360  # 이미지 높이
@@ -358,9 +391,8 @@ class ObjectAvoid(Node):
         # 이미지 배율
         meter_to_pixel = 20  # 미터당 40픽셀로 설정 (배율 줄이기)
 
-        # 차량 및 라이다 위치 설정 (이미지 내 좌표)
-        vehicle_width = 1 *  meter_to_pixel # 차량 너비 (픽셀 단위)
-        vehicle_length = 2.2 * meter_to_pixel  # 차량 길이 (픽셀 단위)
+        # 라이다 위치 설정 (이미지 내 좌표)
+        vehicle_length = 3 * meter_to_pixel  # 차량 길이 (픽셀 단위)
         lidar_position = (int(img_width / 2), int(img_height - vehicle_length))  # 차량의 맨 하단 중앙
 
         # 라이다 감지 범위
@@ -387,11 +419,22 @@ class ObjectAvoid(Node):
         alpha = 0.6 # 투명도
         cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)  # 반투명 효과 (alpha는 투명도)
 
+        # 차량 이미지 삽입
+        car_offset_x = int(lidar_position[0] - car_size // 2)
+        car_offset_y = int(lidar_position[1])
+        
+        # car_img 크기와 삽입 범위가 img 크기를 넘지 않도록 확인
+        end_x = car_offset_x + car_size
+        end_y = car_offset_y + car_size
 
-        # 차량 그리기 (사각형)
-        vehicle_top_left = (int(lidar_position[0] - vehicle_width // 2), int(lidar_position[1]))
-        vehicle_bottom_right = (int(lidar_position[0] + vehicle_width // 2), int(lidar_position[1] + vehicle_length))
-        cv2.rectangle(img, vehicle_top_left, vehicle_bottom_right, (255, 255, 255), -1)
+        # img의 크기 제한에 맞게 end_x, end_y 조정
+        if end_x > img.shape[1]:
+            end_x = img.shape[1]
+        if end_y > img.shape[0]:
+            end_y = img.shape[0]
+
+        # 삽입 범위가 유효한지 확인하고 car_img 크기를 맞춰서 삽입
+        img[car_offset_y:end_y, car_offset_x:end_x] = car_img[:end_y - car_offset_y, :end_x - car_offset_x]
 
         # 라이다 위치에 점 찍기
         cv2.circle(img, lidar_position, 5, (0, 200, 255), -1)
@@ -436,9 +479,11 @@ class ObjectAvoid(Node):
                 cv2.putText(img, distance_text, (obj_x + 15, obj_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1, cv2.LINE_8)
                 cv2.putText(img, class_text, (obj_x + 15, obj_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1, cv2.LINE_8)
 
-        # 화면에 이미지 표시
-        cv2.imshow('Lidar Visualization', img)
-        cv2.waitKey(1)
+        self.image = img
+
+        # # 화면에 이미지 표시
+        # cv2.imshow('Lidar Visualization', img)
+        # cv2.waitKey(1)
 
 
     def get_class_color(self, class_id):
@@ -458,9 +503,17 @@ class ObjectAvoid(Node):
         center_y = y
         radius = max(RAD_RATIO * self.detected_distance, MIN_RADIUS) * meter_to_pixel
 
+        print(f'회피 활성화 {self.avoid_activate}, 차선변경 {self.lane_changed}')
         # 각도 범위: 90도에서 270도까지 (단위: 라디안)
-        theta_start = np.radians(90)  # 90도 -> 라디안
-        theta_end = np.radians(270)   # 270도 -> 라디안
+        if self.lane_changed and self.dead_reckoning == False: # 차선이 변경된 경우에는 경로를 반대 방향으로 생성
+            theta_start = np.radians(-90)
+        elif self.lane_changed == False and self.dead_reckoning == False:
+            theta_start = np.radians(270)   # 270도 -> 라디안
+        else:
+            theta_start = self.prev_theta_start # 데드 레커닝이 진행중일 때는 이전 방향 유지
+        
+        self.prev_theta_start = theta_start # 이전 방향 저장
+        theta_end = np.radians(90)  # 90도 -> 라디안
 
         # 각도를 일정 간격으로 나누어 점 생성
         num_points = 100  # 생성할 점의 수

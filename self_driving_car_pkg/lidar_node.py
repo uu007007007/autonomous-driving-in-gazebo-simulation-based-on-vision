@@ -27,7 +27,7 @@ class LidarTracker(Node):
         timer_period = 0.03;self.timer = self.create_timer(timer_period, self.process_func)
         self.previous_centroids = []  # 이전 프레임의 객체 중심 좌표
         self.epsilon = 0.3  # DBSCAN 클러스터링의 최대 거리 (m)
-        self.tracking_thres = 1.5
+        self.tracking_thres = 0.5
         self.points = None
         self.last_id = 0
 
@@ -113,7 +113,7 @@ class LidarTracker(Node):
             return curr_centroids
         pair_lst = []
         
-
+        print(f'centroids: {centroids}')
         # 이전 중심과 현재 중심 매칭
         for prev in (self.previous_centroids):
             prev_x, prev_y, prev_id = prev
@@ -129,9 +129,9 @@ class LidarTracker(Node):
                     break
         cnt = 0
         pair_lst.sort() # 인덱스 정렬
-
+        print(pair_lst)
         # 매칭 성공한 중심점 제거
-        for i in pair_lst:
+        for i in set(pair_lst):
             print(i)
             print(centroids, i -cnt)
             del centroids[i -cnt]

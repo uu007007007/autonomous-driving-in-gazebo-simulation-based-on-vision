@@ -29,6 +29,8 @@ class Yolov8Node(Node):
     def __init__(self) -> None:
         super().__init__("yolov8_node")
 
+        self.human_conf = 0.9 # 사람에 대한 확정 confidence 설정
+
         # Parameters
         self.declare_parameter("model", "/home/uu007007007/project_ws/src/self_driving_car_pkg/gazebo_yolo.pt") # your trained model, default yolov8m.pt
         model = self.get_parameter("model").get_parameter_value().string_value
@@ -43,22 +45,25 @@ class Yolov8Node(Node):
             self.get_logger().warn("CUDA is not available. Switching to CPU.")
             device = "cpu"
 
-        self.declare_parameter("threshold", 0.8)
+        self.declare_parameter("threshold", 0.7)
         self.threshold = self.get_parameter("threshold").get_parameter_value().double_value
 
         self.declare_parameter("enable", True)
         self.enable = self.get_parameter("enable").get_parameter_value().bool_value
 
-        self._class_to_color = {}
+        self._class_to_color = {"human": (255,0,0)}
         self.cv_bridge = CvBridge()
         self.tracker = self.create_tracker(tracker)
         self.yolo = YOLO(model)
         self.yolo.fuse()
         self.yolo.to(device)  # Move model to the device
+        self.results = None # 욜로 인식 결과 저장
+        self.msg = None
 
         # Topics
         self._pub = self.create_publisher(Detection2DArray, "detections", 10)
-        self._dbg_pub = self.create_publisher(Image, "dbg_image", 10)
+        timer_period = 0.03;self.timer = self.create_timer(timer_period, self.yolo_process)
+        self._dbg_pub = self.create_publisher(Image, "yolo_image", 10)
         self._sub = self.create_subscription(
             Image, "/camera/image_raw", self.image_cb, qos_profile_sensor_data
         )
@@ -89,6 +94,14 @@ class Yolov8Node(Node):
 
     def image_cb(self, msg: Image) -> None:
         if self.enable:
+            self.msg = msg # 메세지 저장         
+            
+        
+    def yolo_process(self):
+        if self.msg is not None:
+
+            msg = self.msg
+            
             # Convert image + predict
             cv_image = self.cv_bridge.imgmsg_to_cv2(msg)
 
@@ -105,8 +118,6 @@ class Yolov8Node(Node):
 
             # Track
             det = results[0].boxes.cpu().numpy()
-
-            person_detected = False  # 사람 감지 여부 초기화
             
             if len(det) > 0:
                 im0s = self.yolo.predictor.batch[2]
@@ -116,29 +127,18 @@ class Yolov8Node(Node):
                 if len(tracks) > 0:
                     results[0].update(boxes=torch.as_tensor(tracks[:, :-1]))
 
+
             # Create detections message
             detections_msg = Detection2DArray()
             detections_msg.header = msg.header
 
             results = results[0].cpu()
-
-            person_detected = False
-
+            
             for b in results.boxes:
                 label = self.yolo.names[int(b.cls)]
                 score = float(b.conf)
                 if score < self.threshold:
                     continue
-
-                # # Object detect    
-                # if label == "person":
-                #     person_detected = True
-                #     self.get_logger().info("Person detected!")
-                #     self.car.stop()
-
-            
-                # else:
-                #     self.car.driveCar(cv_image)
 
                 detection = Detection2D()
                 box = b.xywh[0]
@@ -167,6 +167,7 @@ class Yolov8Node(Node):
                     b = random.randint(0, 255)
                     self._class_to_color[label] = (r, g, b)
                 color = self._class_to_color[label]
+                
 
                 min_pt = (
                     round(detection.bbox.center.x - detection.bbox.size_x / 2.0),
@@ -176,16 +177,21 @@ class Yolov8Node(Node):
                     round(detection.bbox.center.x + detection.bbox.size_x / 2.0),
                     round(detection.bbox.center.y + detection.bbox.size_y / 2.0)
                 )
-
-                cv2.rectangle(cv_image, min_pt, max_pt, color, 4)
-
-                label_text = "{} ({}) ({:.3f})".format(label, str(track_id), score)
-                pos = (min_pt[0] + 5, min_pt[1] + 25)
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                cv2.putText(cv_image, label_text, pos, font, 1, color, 1, cv2.LINE_AA)
+                if label == "human":
+                    if score < self.human_conf: # 임계값 이하인 경우는 색상과 라벨명 변경
+                        color = (255,200,0)
+                        label = "Similar to Human"
+                    cv2.rectangle(cv_image, min_pt, max_pt, color, 4)
+                    label_text = "{} ({:.3f}%)".format(label, score)
+                    pos = (min_pt[0] + 5, min_pt[1] - 5)
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    cv2.putText(cv_image, label_text, pos, font, 1, color, 2, cv2.LINE_AA)
 
                 # Append message
                 detections_msg.detections.append(detection)
+
+            # Display the result image
+            cv_image = cv2.resize(cv_image, (640, 360))
 
             # Publish detections and debug image
             self._pub.publish(detections_msg)
@@ -198,10 +204,9 @@ class Yolov8Node(Node):
                 fps = self.frame_count / elapsed_time
                 #self.get_logger().info(f"FPS: {fps:.2f}, Inference Time: {time.time() - inference_start_time:.4f} seconds")
 
-        # Display the result image
-        cv_image = cv2.resize(cv_image, (640, 360))
-        cv2.imshow('result', cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
-        cv2.waitKey(1)  # Allow the window to update
+            
+            # cv2.imshow('Yolo result', cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+            # cv2.waitKey(1)  # Allow the window to update
 
 def main():
     rclpy.init()
