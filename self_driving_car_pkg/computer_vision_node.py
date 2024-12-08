@@ -6,6 +6,7 @@ import numpy as np
 import os
 import sys
 from time import time
+import random
 
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
@@ -51,7 +52,7 @@ class ComputerVision(Node):
         self.subscriber = self.create_subscription(Image,'/camera/image_raw',self.process_data,10) # 카메라 이미지 sub
         self.lidar_image_sub = self.create_subscription(Image,'/lidar_image',self.lidar_img_cb,10) # 라이다 이미지 sub
         self.lane_image_sub = self.create_subscription(Image,'/lane_image',self.lane_img_cb,10) # lane 이미지 sub
-        self.yolo_image_sub = self.create_subscription(Image,'/yolo_image',self.yolo_img_cb,10) # 욜로 이미지 sub
+        # self.yolo_image_sub = self.create_subscription(Image,'/yolo_image',self.yolo_img_cb,10) # 욜로 이미지 sub
         self.stopline_image_sub = self.create_subscription(Image,'/stopline_image',self.stopline_img_cb,10) # 라이다 이미지 sub
 
         self.stopline_sub = self.create_subscription(Bool,'/stop_line_detected',self.stop_cb,10) # 정지선 인식 결과 sub
@@ -74,6 +75,7 @@ class ComputerVision(Node):
         self.human_stop_activated = False
         self.human_distance = None
         self.avoid = AvoidMsg()
+        self._class_to_color = {"human": (0,0,255)}
 
         # 이미지 변수
         self.yolo_img = None
@@ -81,7 +83,7 @@ class ComputerVision(Node):
         self.lane_img = None
         self.stopline_img = None
         self.cross_img = None
-
+        self.camera_img = None
         
 
     def send_cmd_vel(self):
@@ -105,6 +107,7 @@ class ComputerVision(Node):
         self.Debug.setDebugParameters()
 
         frame = self.bridge.imgmsg_to_cv2(data,'bgr8') # performing conversion
+        self.camera_img = frame
 
         Angle,Speed,img = self.Car.driveCar(frame)
 
@@ -173,20 +176,56 @@ class ComputerVision(Node):
         
 
     def yolo_cb(self, bboxes):
-        human_min_distance = float("inf")
-        for bbox in bboxes.detections: 
-            if bbox.results[0].id == "human":
-                if bbox.results[0].score > HUMAN_CONF:
-                    # 사람과의 거리 계산
-                    self.human_distance = self.calc_human_distance(bbox)
+        if self.camera_img is not None:
+
+            cv_image = self.camera_img.copy() # 카메라 이미지 로드
+
+            human_min_distance = float("inf")
+            for bbox in bboxes.detections: 
+                label = bbox.results[0].id
+                score = bbox.results[0].score
+
+                # Draw boxes for debug
+                if label not in self._class_to_color:
+                    r = random.randint(0, 255)
+                    g = random.randint(0, 255)
+                    b = random.randint(0, 255)
+                    self._class_to_color[label] = (r, g, b)
+                color = self._class_to_color[label]
+                
+
+                min_pt = (
+                    round(bbox.bbox.center.x - bbox.bbox.size_x / 2.0),
+                    round(bbox.bbox.center.y - bbox.bbox.size_y / 2.0)
+                )
+                max_pt = (
+                    round(bbox.bbox.center.x + bbox.bbox.size_x / 2.0),
+                    round(bbox.bbox.center.y + bbox.bbox.size_y / 2.0)
+                )
+                if label == "human":
+                    if score <= HUMAN_CONF: # 임계값 이하인 경우는 색상과 라벨명 변경
+                        color = (0,200,255)
+                        label = "Similar to Human"
+                    else:
+                        # 사람과의 거리 계산
+                        self.human_distance = self.calc_human_distance(bbox)
+                        
+                        if self.human_distance < human_min_distance:
+                            human_min_distance = self.human_distance
                     
-                    if self.human_distance < human_min_distance:
-                        human_min_distance = self.human_distance
-        # 멈춤 또는 이동 행동 결정
-        if human_min_distance <= STOP_DIS:
-            self.human_trigger = True
-        else:
-            self.human_trigger = False
+                    cv2.rectangle(cv_image, min_pt, max_pt, color, 4)
+                    label_text = "{} ({:.3f}%)".format(label, score)
+                    pos = (min_pt[0] + 5, min_pt[1] - 5)
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    cv2.putText(cv_image, label_text, pos, font, 1, color, 2, cv2.LINE_AA)
+
+            self.yolo_img = cv2.resize(cv_image, (640, 360))
+
+            # 멈춤 또는 이동 행동 결정
+            if human_min_distance <= STOP_DIS:
+                self.human_trigger = True
+            else:
+                self.human_trigger = False
 
 
     def yolo_img_cb(self, img:Image)-> None:

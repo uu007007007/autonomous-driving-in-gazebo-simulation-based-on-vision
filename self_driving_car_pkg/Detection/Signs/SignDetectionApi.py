@@ -81,7 +81,7 @@ def SignDetection_Nd_Tracking(gray,cimg,frame_draw,model):
     # 3. IF Mode of SignTrack is Detection , Proceed
     if (signTrack.mode == "Detection" and sign_flag == False): # 표지 인식이 활성화 되지 않은 경우 detection 수행
         # cv2.putText(frame_draw,"Sign Detected ==> "+str(signTrack.Tracked_class),(20,85),cv2.FONT_HERSHEY_COMPLEX,0.75,(255,255,0),2)
-        NumOfVotesForCircle = 32 #parameter 1 MinVotes needed to be classified as circle
+        NumOfVotesForCircle = 33 #parameter 1 MinVotes needed to be classified as circle
         CannyHighthresh = 250 # High threshold value for applying canny
         mindDistanBtwnCircles = 100 # kept as sign will likely not be overlapping
         max_rad = 140 # smaller circles dont have enough votes so only maxRadius need to be controlled 
